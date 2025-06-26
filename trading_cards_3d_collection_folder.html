@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Trading Cards - Drag & Drop Images</title>
+    <style>
+        :root {
+            --primary-blue: #007bff;
+            --primary-blue-dark: #0056b3;
+            --success-green: #28a745;
+            --success-green-dark: #218838;
+            --error-red: #dc3545;
+            --drop-zone-border: #007bff;
+            --drop-zone-bg: rgba(0, 123, 255, 0.1);
+        }
+
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background: #f0f0f0;
+            overflow: hidden; /* Prevent scrollbars due to canvas */
+        }
+
+        canvas {
+            display: block;
+        }
+
+        #controls {
+            position: fixed;
+            top: 60px;
+            left: 10px;
+            z-index: 100;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+            transition: opacity 0.3s ease-in-out;
+            display: flex;
+            flex-direction: column;
+            gap: 10px; /* Space between control elements */
+        }
+
+        #controls.hidden {
+            opacity: 0;
+            pointer-events: none; /* Disable interaction when hidden */
+        }
+
+        #toggleControls {
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            z-index: 101;
+            padding: 8px 12px;
+            border-radius: 5px;
+            background: var(--primary-blue);
+            color: white;
+            border: none;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        #toggleControls:hover {
+            background: var(--primary-blue-dark);
+        }
+
+        #cardSelector, button, input[type="text"], input[type="number"] {
+            margin: 0; /* Reset margin */
+            padding: 8px;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+            width: 100%; /* Make inputs and selector full width of their container */
+            box-sizing: border-box; /* Include padding and border in the element's total width and height */
+        }
+        
+        input[type="file"] {
+            padding: 0; /* Adjust padding for file input */
+            border: none;
+        }
+
+        button {
+            background: var(--success-green);
+            color: white;
+            border: none;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background: var(--success-green-dark);
+        }
+
+        #error-message {
+            position: fixed;
+            top: 10px;
+            right: 10px; /* Adjusted to be separate from the drop zones */
+            background: var(--error-red);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            z-index: 1000;
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.3s ease-in-out, visibility 0.3s ease-in-out;
+            max-width: 300px;
+            box-sizing: border-box;
+        }
+
+        #error-message.show {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        .drop-zone {
+            position: fixed;
+            z-index: 99; /* Below controls, above canvas */
+            background: rgba(255, 255, 255, 0.8);
+            border: 2px dashed #ccc;
+            border-radius: 8px;
+            padding: 15px;
+            text-align: center;
+            font-size: 1.1em;
+            color: #555;
+            transition: all 0.2s ease-in-out;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            width: 150px; /* Kept fixed width */
+            height: 100px; /* Kept fixed height */
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .drop-zone.hover {
+            border-color: var(--drop-zone-border);
+            background: var(--drop-zone-bg);
+            box-shadow: 0 0 15px var(--drop-zone-border);
+        }
+
+        /* --- POSITIONING CHANGES HERE --- */
+        #frontDropZone {
+            top: 10px; /* From top edge */
+            right: 10px; /* From right edge */
+            transform: none; /* Remove previous transform */
+        }
+
+        #backDropZone {
+            top: 130px; /* 10px + height of frontDropZone (100px) + some spacing (20px) */
+            right: 10px; /* From right edge */
+            transform: none; /* Remove previous transform */
+        }
+    </style>
+</head>
+<body>
+    <button id="toggleControls">Hide Controls</button>
+    <div id="controls">
+        <div>
+            <label for="frontImage">Front Image (File):</label>
+            <input type="file" id="frontImage" accept="image/*">
+        </div>
+        <div>
+            <label for="backImage">Back Image (File):</label>
+            <input type="file" id="backImage" accept="image/*">
+        </div>
+        <select id="cardSelector"></select>
+        <button id="addNewCardBtn">Add Card</button>
+        <button id="flipCardBtn">Flip Card</button>
+        <button id="toggleRotateBtn">Rotate Card</button>
+        <button id="zoomInBtn">Zoom In</button>
+        <button id="zoomOutBtn">Zoom Out</button>
+    </div>
+
+    <div id="frontDropZone" class="drop-zone">Drag Front Image Here</div>
+    <div id="backDropZone" class="drop-zone">Drag Back Image Here</div>
+
+    <div id="error-message" role="alert"></div>
+
+    <script type="module">
+        import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.module.js';
+
+        class TradingCardApp {
+            #scene;
+            #camera;
+            #renderer;
+            #cards = [];
+            #selectedCard = null;
+            #mouse = { x: 0, y: 0 };
+            #isDragging = false;
+            #dragMode = null;
+            #controlsVisible = true;
+            #isRotating = false;
+            #cardThickness = 0.01; // Keep thickness constant
+            #errorMessageElement;
+            #frontDropZone;
+            #backDropZone;
+
+            constructor() {
+                this.#errorMessageElement = document.getElementById('error-message');
+                this.#frontDropZone = document.getElementById('frontDropZone');
+                this.#backDropZone = document.getElementById('backDropZone');
+                this.#init();
+                this.#bindEvents();
+                this.#bindDropZoneEvents();
+            }
+
+            #init() {
+                try {
+                    this.#scene = new THREE.Scene();
+                    this.#camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+                    this.#renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+                    this.#renderer.setPixelRatio(window.devicePixelRatio);
+                    this.#renderer.setSize(window.innerWidth, window.innerHeight);
+                    document.body.appendChild(this.#renderer.domElement);
+                    this.#camera.position.z = 5;
+
+                    this.addNewCard(); // Add an initial blank card
+                    this.#animate();
+                } catch (error) {
+                    console.error('Initialization failed:', error);
+                    this.#showError('Failed to initialize 3D environment. Please ensure your browser supports WebGL.');
+                }
+            }
+
+            #bindEvents() {
+                const canvas = this.#renderer.domElement;
+                canvas.addEventListener('mousedown', this.#onMouseDown.bind(this));
+                canvas.addEventListener('mousemove', this.#onMouseMove.bind(this));
+                canvas.addEventListener('mouseup', this.#onMouseUp.bind(this));
+                canvas.addEventListener('wheel', this.#onMouseWheel.bind(this));
+                window.addEventListener('resize', this.#onWindowResize.bind(this));
+
+                document.getElementById('toggleControls').addEventListener('click', this.toggleControls.bind(this));
+                document.getElementById('frontImage').addEventListener('change', this.#loadFrontImageFromFileInput.bind(this));
+                document.getElementById('backImage').addEventListener('change', this.#loadBackImageFromFileInput.bind(this));
+                document.getElementById('cardSelector').addEventListener('change', (e) => this.selectCard(parseInt(e.target.value)));
+                
+                document.getElementById('addNewCardBtn').addEventListener('click', this.addNewCard.bind(this));
+                document.getElementById('flipCardBtn').addEventListener('click', this.flipCard.bind(this));
+                document.getElementById('toggleRotateBtn').addEventListener('click', this.toggleRotate.bind(this));
+                document.getElementById('zoomInBtn').addEventListener('click', this.zoomIn.bind(this));
+                document.getElementById('zoomOutBtn').addEventListener('click', this.zoomOut.bind(this));
+            }
+
+            #bindDropZoneEvents() {
+                // Front Drop Zone
+                this.#frontDropZone.addEventListener('dragover', (e) => { e.preventDefault(); this.#frontDropZone.classList.add('hover'); });
+                this.#frontDropZone.addEventListener('dragleave', () => { this.#frontDropZone.classList.remove('hover'); });
+                this.#frontDropZone.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    this.#frontDropZone.classList.remove('hover');
+                    this.#handleDrop(e, 'front');
+                });
+
+                // Back Drop Zone
+                this.#backDropZone.addEventListener('dragover', (e) => { e.preventDefault(); this.#backDropZone.classList.add('hover'); });
+                this.#backDropZone.addEventListener('dragleave', () => { this.#backDropZone.classList.remove('hover'); });
+                this.#backDropZone.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    this.#backDropZone.classList.remove('hover');
+                    this.#handleDrop(e, 'back');
+                });
+            }
+
+            async createCard(index) {
+                try {
+                    // Initial arbitrary size, will be updated by image dimensions
+                    const geometry = new THREE.BoxGeometry(1, 1, this.#cardThickness); 
+                    
+                    const defaultMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff });
+                    
+                    const materials = [
+                        defaultMaterial, // Right side
+                        defaultMaterial, // Left side
+                        defaultMaterial, // Top side
+                        defaultMaterial, // Bottom side
+                        new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0 }), // Front face
+                        new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0 })  // Back face
+                    ];
+
+                    const card = new THREE.Mesh(geometry, materials);
+                    card.userData = { 
+                        frontTexture: new THREE.Texture(), 
+                        backTexture: new THREE.Texture(), 
+                        index, 
+                        opacity: 0, 
+                        targetRotationY: 0, 
+                        isFlipping: false,
+                        cardWidth: 1, // Store current width
+                        cardHeight: 1 // Store current height
+                    };
+                    card.visible = false;
+                    this.#scene.add(card);
+                    return card;
+                } catch (error) {
+                    console.error('Card creation failed:', error);
+                    this.#showError(`Failed to create card: ${error.message}`);
+                    return null;
+                }
+            }
+
+            async addNewCard() {
+                const newCard = await this.createCard(this.#cards.length);
+                if (newCard) {
+                    newCard.userData.name = `Custom Card ${this.#cards.length + 1}`;
+                    this.#cards.push(newCard);
+                    this.#updateCardSelector();
+                    this.selectCard(this.#cards.length - 1);
+                }
+            }
+
+            #updateCardSelector() {
+                const selector = document.getElementById('cardSelector');
+                selector.innerHTML = '<option value="">Select a card</option>';
+                this.#cards.forEach((card, index) => {
+                    const option = document.createElement('option');
+                    option.value = index;
+                    option.text = card.userData.name || `Card ${index + 1}`; 
+                    selector.appendChild(option);
+                });
+                if (this.#cards.length > 0 && this.#selectedCard) {
+                    selector.value = this.#cards.indexOf(this.#selectedCard);
+                }
+            }
+
+            selectCard(index) {
+                if (isNaN(index) || index < 0 || index >= this.#cards.length) {
+                    if (this.#cards.length > 0) {
+                        this.#showError('Invalid card selection. Please select an existing card.');
+                    }
+                    return;
+                }
+
+                if (this.#selectedCard === this.#cards[index]) {
+                    return;
+                }
+
+                if (this.#selectedCard) {
+                    this.#fadeOut(this.#selectedCard, () => {
+                        this.#selectedCard.visible = false;
+                        this.#selectedCard = this.#cards[index];
+                        this.#fadeIn(this.#selectedCard);
+                    });
+                } else {
+                    this.#selectedCard = this.#cards[index];
+                    this.#fadeIn(this.#selectedCard);
+                }
+                document.getElementById('cardSelector').value = index;
+            }
+
+            #fadeIn(card) {
+                card.visible = true;
+                card.userData.opacity = 0;
+                card.position.set(0, 0, 0); 
+                card.rotation.y = card.userData.targetRotationY;
+
+                const animateFadeIn = () => {
+                    if (card.userData.opacity < 1) {
+                        card.userData.opacity += 0.05;
+                        card.material.forEach(mat => { if (mat.transparent) mat.opacity = card.userData.opacity; });
+                        requestAnimationFrame(animateFadeIn);
+                    } else {
+                        card.material.forEach(mat => { if (mat.transparent) mat.opacity = 1; });
+                    }
+                };
+                animateFadeIn();
+            }
+
+            #fadeOut(card, callback) {
+                const animateFadeOut = () => {
+                    if (card.userData.opacity > 0) {
+                        card.userData.opacity -= 0.05;
+                        card.material.forEach(mat => { if (mat.transparent) mat.opacity = card.userData.opacity; });
+                        requestAnimationFrame(animateFadeOut);
+                    } else {
+                        card.material.forEach(mat => { if (mat.transparent) mat.opacity = 0; });
+                        callback();
+                    }
+                };
+                animateFadeOut();
+            }
+
+            flipCard() {
+                if (!this.#selectedCard || this.#selectedCard.userData.isFlipping) return;
+                this.#selectedCard.userData.isFlipping = true;
+                this.#selectedCard.userData.targetRotationY += Math.PI;
+
+                const flipAnimation = () => {
+                    const diff = this.#selectedCard.userData.targetRotationY - this.#selectedCard.rotation.y;
+                    if (Math.abs(diff) > 0.01) {
+                        this.#selectedCard.rotation.y += diff * 0.1;
+                        requestAnimationFrame(flipAnimation);
+                    } else {
+                        this.#selectedCard.rotation.y = this.#selectedCard.userData.targetRotationY % (2 * Math.PI); 
+                        this.#selectedCard.userData.isFlipping = false;
+                    }
+                };
+                flipAnimation();
+            }
+
+            zoomIn() {
+                this.#camera.position.z = Math.max(2, this.#camera.position.z - 0.5);
+            }
+
+            zoomOut() {
+                this.#camera.position.z = Math.min(10, this.#camera.position.z + 0.5); 
+            }
+
+            toggleControls() {
+                this.#controlsVisible = !this.#controlsVisible;
+                const controls = document.getElementById('controls');
+                const button = document.getElementById('toggleControls');
+                controls.classList.toggle('hidden', !this.#controlsVisible);
+                button.textContent = this.#controlsVisible ? 'Hide Controls' : 'Show Controls';
+            }
+
+            toggleRotate() {
+                if (!this.#selectedCard) return;
+                this.#isRotating = !this.#isRotating;
+                document.getElementById('toggleRotateBtn').textContent = 
+                    this.#isRotating ? 'Stop Rotation' : 'Rotate Card';
+            }
+
+            #animate() {
+                requestAnimationFrame(this.#animate.bind(this));
+                if (this.#isRotating && this.#selectedCard && !this.#selectedCard.userData.isFlipping) {
+                    this.#selectedCard.rotateY(0.02);
+                }
+                this.#renderer.render(this.#scene, this.#camera);
+            }
+
+            #onMouseDown(event) {
+                event.preventDefault();
+                this.#isDragging = true;
+                this.#mouse.x = event.clientX;
+                this.#mouse.y = event.clientY;
+                this.#dragMode = (event.button === 2 || event.ctrlKey) ? 'z' : 'xy'; 
+            }
+
+            #onMouseMove(event) {
+                if (this.#isDragging && this.#selectedCard && !this.#selectedCard.userData.isFlipping) {
+                    const deltaX = event.clientX - this.#mouse.x;
+                    const deltaY = event.clientY - this.#mouse.y;
+                    if (this.#dragMode === 'xy') {
+                        this.#selectedCard.rotation.y += deltaX * 0.005;
+                        this.#selectedCard.rotation.x += deltaY * 0.005;
+                    } else if (this.#dragMode === 'z') {
+                        this.#selectedCard.rotation.z += deltaX * 0.005;
+                    }
+                    this.#mouse.x = event.clientX;
+                    this.#mouse.y = event.clientY;
+                }
+            }
+
+            #onMouseUp() {
+                this.#isDragging = false;
+                this.#dragMode = null;
+            }
+
+            #onMouseWheel(event) {
+                event.preventDefault();
+                this.#camera.position.z += event.deltaY * 0.01;
+                this.#camera.position.z = Math.max(2, Math.min(10, this.#camera.position.z)); 
+            }
+
+            #onWindowResize() {
+                this.#camera.aspect = window.innerWidth / window.innerHeight;
+                this.#camera.updateProjectionMatrix();
+                this.#renderer.setSize(window.innerWidth, window.innerHeight);
+            }
+
+            async #loadFrontImageFromFileInput(event) {
+                if (!this.#selectedCard) {
+                    this.#showError('Please select a card first to load an image.');
+                    return;
+                }
+                if (event.target.files.length > 0) {
+                    await this.#updateCardTexture(event.target.files[0], this.#selectedCard.userData.frontTexture, 4);
+                }
+            }
+
+            async #loadBackImageFromFileInput(event) {
+                if (!this.#selectedCard) {
+                    this.#showError('Please select a card first to load an image.');
+                    return;
+                }
+                if (event.target.files.length > 0) {
+                    await this.#updateCardTexture(event.target.files[0], this.#selectedCard.userData.backTexture, 5);
+                }
+            }
+
+            async #handleDrop(event, cardFace) {
+                if (!this.#selectedCard) {
+                    this.#showError('Please select a card first to drop an image.');
+                    return;
+                }
+
+                const textureToUpdate = (cardFace === 'front') ? this.#selectedCard.userData.frontTexture : this.#selectedCard.userData.backTexture;
+                const materialIndex = (cardFace === 'front') ? 4 : 5;
+
+                if (event.dataTransfer.files.length > 0) {
+                    // Dropped a local file
+                    await this.#updateCardTexture(event.dataTransfer.files[0], textureToUpdate, materialIndex);
+                } else if (event.dataTransfer.getData('text/uri-list')) {
+                    // Dropped a URL (e.g., from another browser tab, Firefox often uses this)
+                    const url = event.dataTransfer.getData('text/uri-list');
+                    await this.#updateCardTexture(url, textureToUpdate, materialIndex);
+                } else if (event.dataTransfer.getData('text/html')) {
+                    // Sometimes images dragged from webpages come as HTML (Chrome, Edge often use this)
+                    const html = event.dataTransfer.getData('text/html');
+                    const parser = new DOMParser();
+                    const doc = parser.parseFromString(html, 'text/html');
+                    const img = doc.querySelector('img');
+                    if (img && img.src) {
+                        await this.#updateCardTexture(img.src, textureToUpdate, materialIndex);
+                    } else {
+                        this.#showError('Could not find image URL in dropped content (HTML).');
+                    }
+                } else {
+                    this.#showError('Unsupported drop content. Please drop an image file or an image URL.');
+                }
+            }
+
+            async #updateCardTexture(source, texture, materialIndex) {
+                return new Promise((resolve, reject) => {
+                    const img = new Image();
+                    img.crossOrigin = 'anonymous'; // Important for loading external images
+
+                    img.onload = () => {
+                        // Calculate aspect ratio
+                        const aspectRatio = img.width / img.height;
+                        let newCardWidth, newCardHeight;
+
+                        // Maintain aspect ratio, scale to fit a reasonable view
+                        const maxDisplayHeight = 4; // Arbitrary max height for good viewing
+                        newCardHeight = maxDisplayHeight;
+                        newCardWidth = newCardHeight * aspectRatio;
+
+                        // If the new width is too large, scale based on width instead
+                        const maxDisplayWidth = 6; // Arbitrary max width
+                        if (newCardWidth > maxDisplayWidth) {
+                            newCardWidth = maxDisplayWidth;
+                            newCardHeight = newCardWidth / aspectRatio;
+                        }
+
+                        if (this.#selectedCard) {
+                            // Update the card's geometry based on the image dimensions
+                            const newGeometry = new THREE.BoxGeometry(newCardWidth, newCardHeight, this.#cardThickness);
+                            this.#selectedCard.geometry.dispose(); // Dispose old geometry
+                            this.#selectedCard.geometry = newGeometry;
+                            this.#selectedCard.userData.cardWidth = newCardWidth;
+                            this.#selectedCard.userData.cardHeight = newCardHeight;
+                        }
+
+                        texture.image = img;
+                        texture.needsUpdate = true;
+                        this.#selectedCard.material[materialIndex].map = texture;
+                        this.#selectedCard.material[materialIndex].needsUpdate = true;
+                        // Ensure opacity is 1 if it was 0 initially for the material
+                        this.#selectedCard.material[materialIndex].opacity = 1; 
+                        resolve();
+                    };
+                    img.onerror = (e) => {
+                        const errorMessage = `Failed to load image from ${typeof source === 'string' ? source : 'file'}. This is often due to **CORS (Cross-Origin Resource Sharing)** policy for images from other websites. Try downloading the image first and using the file input, or dragging a local file.`;
+                        this.#showError(errorMessage);
+                        console.error('Image loading error:', e);
+                        reject(new Error(errorMessage));
+                    };
+
+                    if (typeof source === 'string') {
+                        // Source is a URL (from internet drag or local server path)
+                        img.src = source;
+                    } else if (source instanceof File) {
+                        // Source is a local File object (from file input or local drag)
+                        const reader = new FileReader();
+                        reader.onload = (e) => {
+                            img.src = e.target.result;
+                        };
+                        reader.onerror = () => {
+                            const errorMessage = 'Failed to read image file. Check file permissions or try a different file.';
+                            this.#showError(errorMessage);
+                            reject(new Error(errorMessage));
+                        };
+                        reader.readAsDataURL(source);
+                    } else {
+                        const errorMessage = 'Invalid image source provided.';
+                        this.#showError(errorMessage);
+                        reject(new Error(errorMessage));
+                    }
+                });
+            }
+
+            #showError(message) {
+                this.#errorMessageElement.textContent = message;
+                this.#errorMessageElement.classList.add('show');
+                clearTimeout(this.#errorMessageElement.hideTimeout); 
+                this.#errorMessageElement.hideTimeout = setTimeout(() => {
+                    this.#errorMessageElement.classList.remove('show');
+                }, 7000); // Display error for 7 seconds
+            }
+        }
+
+        new TradingCardApp();
+    </script>
+</body>
+</html>
